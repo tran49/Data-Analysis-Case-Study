@@ -1,0 +1,178 @@
+---
+title: "case study 1 markdown"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Case Study 1 
+
+
+```{r results = 'hide', message=FALSE, warning=FALSE}
+# Load Libraries for plotting data 
+library(ggplot2)
+library(corrplot)
+library(reshape2) 
+library(faraway) 
+library(usmap) 
+library(tidyverse)
+library(broom) 
+library(lmtest) 
+library(skimr)
+library(ggfortify)
+library(car)
+```
+
+```{r cars}
+
+# read in the dataset
+prostate = read.table('prostate.txt', col.names = c('ID', 'psalevel', 'cancervolume', 'prostateweight', 'age', 'hyperplasia', 'svi', 'capsular', 'gleason'))
+
+# remove unneeded predictors
+prostate = subset(prostate, select = -c(ID, prostateweight))
+head(prostate)
+
+prostate.num=subset(prostate, select = -c(svi))
+skim_without_charts(prostate)
+
+#Density graph of each predictors
+ggplot(melt(subset(prostate.num, select=-c(psalevel))), aes(value)) + 
+  geom_histogram(aes(y = ..density.. ), alpha = 0.4, color = "blue", bins=30) + 
+  geom_density(color = "red") + facet_wrap(variable~., scales = "free", ncol = 3) + 
+  xlab("Values") + ylab("Density") + theme_classic () 
+
+#Density graph of y-variable (psalevel)
+ggplot(prostate.num, aes(x = psalevel)) + geom_histogram(aes(y = ..density.. ), alpha = 0.4, color ="blue", bins=30)+
+  geom_density(color = "red") + xlab("PSA Level") + ylab("Density") + theme_classic ()
+
+# create full linear model
+prostate.full = lm(psalevel ~ ., data = prostate)
+summary(prostate.full)
+
+# create correlation matrix
+round(cor(prostate), dig = 2)
+
+#visualization (heat map) of correlation matrix
+corrplot(cor(prostate.num), type = "upper", order = "hclust", diag = FALSE, tl.col = "black", tl.srt = 45, tl.cex = 0.7, number.cex = 0.6)
+
+# compute condition number
+x = model.matrix(prostate.full)[,-1]
+dim(x)
+x = x - matrix(apply(x,2, mean), dim(x)[1],dim(x)[2], byrow=TRUE)
+x = x / matrix(apply(x, 2, sd), dim(x)[1],dim(x)[2], byrow=TRUE)
+head(x)
+e = eigen(t(x) %*% x)
+condition_number = sqrt(e$val[1]/e$val[6])
+condition_number
+# Since condition number is < 30, collinearity not present
+
+#VIFs = round(vif(x), dig = 2)
+#sqrt(VIFs)
+
+# vif(x) sometimes produced an error: "$ operator is invalid for atomic vectors" that we determined arose at least in part because x was a matrix, so as a workaround, we turned x into a dataframe and proceeded with the vif test. The result was the same.
+df_x = as.data.frame(x)
+df_x$psalevel = prostate$psalevel
+VIFs = vif(lm(psalevel ~ ., data = df_x))
+# VIF is less than 5 for all predictors, confirming a lack of collinearity.
+round(sqrt(VIFs), dig = 2)
+# SE is less than 2 times larger than it would have been without collinearity for all variables.
+
+# remove and perform anova on most insignificant variable from model until all variables are significant.
+
+prostate.red1 = lm(psalevel ~ cancervolume + age + hyperplasia + svi + gleason, data = prostate)
+summary(prostate.red1)
+anova(prostate.red1, prostate.full)
+
+prostate.red2 = lm(psalevel ~ cancervolume + hyperplasia + svi + gleason, data = prostate)
+summary(prostate.red2)
+anova(prostate.red2, prostate.red1)
+
+prostate.red3 = lm(psalevel ~ cancervolume + hyperplasia + svi, data = prostate)
+summary(prostate.red3)
+anova(prostate.red3, prostate.red2)
+
+prostate.red4 = lm(psalevel ~ cancervolume + svi, data = prostate)
+summary(prostate.red4)
+anova(prostate.red4, prostate.red3)
+
+model.final = lm(psalevel ~ cancervolume + svi, data = prostate)
+summary(model.final)
+#all predictors are now statistically significant
+
+# Model Diagnostics
+
+#High leverage points 
+diag_hat = lm.influence(prostate.red4)$hat 
+high_lev = diag_hat[diag_hat > (2 * dim(prostate)[2] / dim(prostate)[1])]
+high_lev
+
+halfnorm(diag_hat, ylab='Leverages') 
+
+# Calculate the IQR for the dependent variable 
+IQR_y = IQR(prostate$psalevel)
+
+# Define a range with its lower limit being (Q1 - IQR) and upper limit being (Q3 + IQR) 
+QT1_y = quantile(prostate$psalevel,0.25)
+QT3_y = quantile(prostate$psalevel,0.75)
+lower_lim_y = QT1_y - IQR_y
+upper_lim_y = QT3_y + IQR_y
+vector_lim_y = c(lower_lim_y,upper_lim_y)
+
+#vector_lim_y
+
+highlev = prostate[diag_hat>(2 * dim(prostate)[2] / dim(prostate)[1]),]
+
+# Select only the observations with leverage points outside the range 
+
+highlev_lower = highlev[highlev$psalevel < vector_lim_y[1], ]
+highlev_upper = highlev[highlev$psalevel > vector_lim_y[2], ]
+rbind(highlev_lower,highlev_upper)
+
+# Outliers
+jackknife = rstudent(prostate.red4) 
+critical_value = qt(0.05/(2*dim(prostate) [1]), prostate.red4$df.residual - 1) 
+critical_value 
+
+outliers = jackknife[abs(jackknife) > abs(critical_value)] 
+outliers 
+
+# High Influential Points
+cook = cooks.distance(prostate.red4) 
+cook[cook > 1] 
+
+halfnorm(cook, labs = row.names(prostate), ylab= "Cook's distance")
+
+# Const Variance
+plot(prostate.red4, which = 1) 
+bptest(prostate.red4) 
+
+# Normality Assumption 
+plot(prostate.red4, which = 2) 
+ks.test(resid(prostate.red4), y= pnorm) 
+# p-values for both tests are less than .05, so we must transform the model.
+
+# Box-Cox Transformation?
+library(MASS) 
+
+boxc =  boxcox(prostate.red4, plotit = T) 
+boxc
+
+lambda = boxc$x[which.max(boxc$y)] 
+lambda
+prostate.transformed.lm = lm((log(psalevel)) ~ cancervolume + svi, data = prostate)
+
+summary(prostate.transformed.lm)
+
+# Const Variance
+plot(prostate.transformed.lm, which = 1) 
+bptest(prostate.transformed.lm) 
+
+# Normality Assumption 
+plot(prostate.transformed.lm, which = 2) 
+ks.test(resid(prostate.transformed.lm), y= pnorm)
+
+#both tests are satisfied, we have our final model.
+
+```
